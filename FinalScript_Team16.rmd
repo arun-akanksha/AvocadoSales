@@ -1,0 +1,584 @@
+---
+title: "Time Series Final Project"
+author: "Shubhangi Sharma, Akanksha Arun, Juhil Ahir, Tanvi Vijay"
+date: "2023-12-01"
+output:
+  pdf_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initial data exploration
+
+```{r}
+library(forecast)
+library(dplyr)
+library(ggplot2)
+
+avocados = read.csv("avocado.csv",header = TRUE)
+
+avocados_c = filter(avocados, region == "California",type=="conventional")
+avocados_o = filter(avocados, region == "California",type=="organic")
+
+avocados_c = avocados_c %>% arrange(Date)
+avocados_o = avocados_o %>% arrange(Date)
+
+tdx = c(1:169)/52+2015
+plot(tdx,avocados_c$Total.Volume/1000,type="l",ylab="Total Volume sold (K)",xlab="Time",main = "Conventional Avocados")
+plot(tdx,avocados_o$Total.Volume/1000,type="l",ylab="Total Volume sold (K)",xlab="Time",main = "Organic Avocados")
+#based on the initial plot we see no trend, seasonality, level and noise
+
+avocados_c.ts = ts(avocados_c[,4], frequency = 52, start=c(2015))
+avocados_o.ts = ts(avocados_o[,4], frequency = 52, start=c(2015))
+
+autoplot(decompose(avocados_c.ts))
+autoplot(avocados_c.ts/1000,ylab="Total Volume sold (K)",xlab="Time",main = "Conventional Avocados")
+ts1 = aggregate(avocados_c.ts,FUN=mean)
+autoplot(ts1)
+
+# checking seasonality
+Acf(avocados_c.ts,lag.max=150)
+# We see a peak at lag 52 that implies a yearly seasonality component
+
+
+autoplot(decompose(avocados_o.ts))
+autoplot(avocados_o.ts/1000,ylab="Total Volume sold (K)",xlab="Time",main = "Organic Avocados")
+ts2 = aggregate(avocados_o.ts,FUN=mean)
+autoplot(ts2)
+
+# checking seasonality
+Acf(avocados_o.ts,lag.max=150)
+# We see a yearly seasonality component
+
+
+boxplot(avocados_c.ts)
+#we have outliers
+boxplot(avocados_c.ts/1000~cycle(avocados_c.ts),xlab = "Month",ylab="Sales")
+# on average across all years we see a high volume of conventional avocados being sold in the second week of February
+seasonplot(avocados_c.ts/1000,year.labels=T,col=c("blue","red","green","purple"),lwd=2)
+```
+
+```{r}
+boxplot(avocados_o.ts)
+boxplot(avocados_o.ts/1000~cycle(avocados_o.ts),xlab = "Month",ylab="Sales")
+seasonplot(avocados_o.ts/1000,year.labels=T,col=c("blue","red","green","purple"),lwd=2)
+# Similar to conventional, we could observe a increase in sale for organic avocado during the time frame of the 9th to 12th week.
+```
+
+
+# Creating training and testing data for Conventional Avocado
+```{r}
+n = length(avocados_c.ts)
+n
+# set up the forecasting horizon
+stepsAhead = 12 
+
+# assign the length of the training set
+nTrain = n - stepsAhead
+
+#create the training set
+train.ts = window(avocados_c.ts ,frequency = 52, end=c(2018))
+
+
+#create the validation set
+valid.ts = window(avocados_c.ts, frequency = 52, start=c(2018))
+```
+
+# Creating training and testing data for Organic Avocado
+```{r}
+
+#create the training set
+train.ts_org = window(avocados_o.ts ,frequency = 52, end=c(2018))
+
+
+#create the validation set
+valid.ts_org = window(avocados_o.ts, frequency = 52, start=c(2018))
+
+```
+
+# Modeling
+
+#1. Linear Models for Modeling (Conventional)
+
+```{r}
+# fitting a linear model with trend and seasonality which is additive
+model1 = tslm(train.ts~trend + season)
+model1
+autoplot(train.ts) +
+  geom_line(aes(y=model1$fitted.values),col=2)
+checkresiduals(model1)
+accuracy(model1)
+
+# fitting a linear model with trend and seasonality which is multiplicative
+model2 = tslm(log(train.ts)~trend + season)
+model2
+autoplot(log(train.ts)) + geom_line(aes(y=model2$fitted.values),col=3)
+checkresiduals(model2)
+accuracy(model2)
+
+```
+
+#1.1. Linear Models for Modeling (Organic)
+```{r}
+model1_org = tslm(train.ts_org~trend + season)
+model1_org
+autoplot(train.ts_org) +
+  geom_line(aes(y=model1_org$fitted.values),col=2)
+checkresiduals(model1_org)
+accuracy(model1_org)
+
+model2_org = tslm(log(train.ts_org)~trend + season)
+model2_org
+autoplot(log(train.ts_org)) + geom_line(aes(y=model2_org$fitted.values),col=3)
+checkresiduals(model2_org)
+accuracy(model2_org)
+```
+
+#2 Naive and Seasonal Naive for Conventional Avocado
+
+```{r}
+# use function naive to get 12-step-ahead forecast
+naive = naive(train.ts,h=12)
+naive
+# use function snaive to create a 1-season-ahead forecast
+seasonal = snaive(train.ts, 12)
+seasonal
+
+accuracy(naive, valid.ts)
+accuracy(seasonal, valid.ts)
+
+#3. moving average model
+library(zoo)
+nValid = length(valid.ts)
+ma.centered = ma(train.ts, order = 3)
+
+autoplot(train.ts, ylab = "Demand", col="black", series = "Observed")+ 
+  autolayer(ma.centered, series = "Moving Average", lwd = 1.5)+
+  scale_x_continuous(breaks = seq(from = 2003, to = 2006,6))
+
+#4. trailing moving average
+
+ma.trailing = rollmean(train.ts, k = 3, align= "right")
+# Find the last moving average in the training period
+pred = tail(ma.trailing, 1)
+
+# Use the last moving average as the prediction for each month in the validation period
+ma.trailing.pred = ts(rep(pred, nValid), start = start(valid.ts),frequency = frequency(valid.ts))
+
+# let's find the actual observed average over the validation period
+
+mean.valid = ts(rep(mean(valid.ts), nValid), start = start(valid.ts), frequency = frequency(valid.ts))
+
+autoplot(train.ts, ylab = "Demand", col="black", series = "Observed")+ 
+  autolayer(ma.centered, series = "Moving Average", lwd = 1.5)+
+   autolayer(ma.trailing.pred, series = "Predicted", lwd=1.5)+
+  autolayer(mean.valid, series = "Average", lwd = 1.5)
+  #scale_x_continuous(breaks = seq(from = 2003, to = 2006))
+
+accuracy(ma.trailing, train.ts)
+accuracy(ma.trailing.pred, valid.ts)
+
+
+#5. Holt Winter's model (Since there is seasonality) -> we can NOT apply because frequency is greater than 24
+```
+
+#2.1 Naive and Seasonal Naive for Organic Avocado
+```{r}
+# use function naive to get 12-step-ahead forecast
+naive_org = naive(train.ts_org,h=12)
+naive_org
+# use function snaive to create a 1-season-ahead forecast
+seasonal_org = snaive(train.ts_org, 12)
+seasonal_org
+
+accuracy(naive_org, valid.ts_org)
+accuracy(seasonal_org, valid.ts_org)
+
+#3. moving average model
+library(zoo)
+nValid = length(valid.ts_org)
+ma.centered_org = ma(train.ts_org, order = 3)
+
+autoplot(train.ts_org, ylab = "Demand", col="black", series = "Observed")+ 
+  autolayer(ma.centered_org, series = "Moving Average", lwd = 1.5)+
+  scale_x_continuous(breaks = seq(from = 2003, to = 2006,6))
+
+#4. trailing moving average
+
+ma.trailing_org = rollmean(train.ts_org, k = 3, align= "right")
+# Find the last moving average in the training period
+pred_org = tail(ma.trailing_org, 1)
+
+# Use the last moving average as the prediction for each month in the validation period
+ma.trailing.pred_org = ts(rep(pred_org, nValid), start = start(valid.ts_org),frequency = frequency(valid.ts_org))
+
+# let's find the actual observed average over the validation period
+
+mean.valid_org = ts(rep(mean(valid.ts_org), nValid), start = start(valid.ts_org), frequency = frequency(valid.ts_org))
+
+autoplot(train.ts_org, ylab = "Demand", col="black", series = "Observed")+ 
+  autolayer(ma.centered_org, series = "Moving Average", lwd = 1.5)+
+   autolayer(ma.trailing.pred_org, series = "Predicted", lwd=1.5)+
+  autolayer(mean.valid_org, series = "Average", lwd = 1.5)
+  #scale_x_continuous(breaks = seq(from = 2003, to = 2006))
+
+accuracy(ma.trailing_org, train.ts_org)
+accuracy(ma.trailing.pred_org, valid.ts_org)
+
+
+#5. Holt Winter's model (Since there is seasonality) -> we can NOT apply because frequency is greater than 24
+
+```
+
+
+•	Moving average of raw series
+	◦	Would not be suitable. The moving average method can’t account for seasonality and lags behind trend
+	•	Moving average of deseasonalized series
+	◦	Would also not be suitable. While moving average would work better on the deseasonalized series than the raw series, it is still not ideal.
+	•	Simple exponential smoothing of the raw series
+	◦	Would not be suitable. As with the moving average method, simple exponential smoothing does not work well for series with seasonality and/or trend.
+	•	Double exponential smoothing of the raw series
+	◦	Would not be suitable. While double exponential smoothing could deal with the trend in the raw series it could not account for the seasonality.
+
+#3. Checking for the auto correlation factors in the data
+
+```{r}
+
+par(mfrow=c(1,2))
+Acf(avocados_c.ts, 105, main="Conventional Avocado") # tailing off
+Pacf(avocados_c.ts, 105, main="") # mostly cuts off after 1 spike or tails off
+par(mfrow=c(1,1))
+```
+
+```{r}
+# For organic 
+par(mfrow=c(1,2))
+Acf(avocados_o.ts, 105, main="Organic Avocado") # tailing off
+Pacf(avocados_o.ts, 105, main="") # mostly cuts off after 1 spike 
+par(mfrow=c(1,1))
+```
+
+#4. ARIMA models for Conventional Avocados
+
+```{r}
+library(forecast)
+
+#so we will try AR(1)
+m1 = Arima(train.ts, order = c(1,0,0))
+summary(m1)
+
+#no need to difference because no trend 
+#but seasonslity is there
+m2 = Arima(train.ts, order = c(1,0,0), seasonal = list(order = c(1,0,0), period = 52))
+summary(m2)
+#prediction
+m2.p = forecast(m2, h = length(valid.ts))
+autoplot(m2.p)
+
+autoplot(valid.ts)+ autolayer(m2.p$mean)
+
+accuracy(m2.p, valid.ts)
+
+checkresiduals(m2)
+
+#model 3
+m3 = Arima(train.ts, order = c(1,0,0), seasonal = list(order = c(0,1,0), period = 52))
+summary(m3)
+
+
+#prediction
+m3.p = forecast(m3, h = length(valid.ts))
+autoplot(m3.p)
+
+autoplot(valid.ts)+ autolayer(m3.p$mean)
+
+accuracy(m3.p, valid.ts)
+
+checkresiduals(m3)
+
+#model 4
+m4 = Arima(train.ts, order = c(1,0,0), seasonal = list(order = c(1,1,0), period = 52))
+summary(m4)
+
+
+#prediction
+m4.p = forecast(m4, h = length(valid.ts))
+autoplot(m4.p)
+
+autoplot(valid.ts)+ autolayer(m4.p$mean)
+
+accuracy(m4.p, valid.ts)
+
+checkresiduals(m4)
+```
+
+```{r}
+# For Organic
+#so we will try AR(1)
+m1_org = Arima(train.ts_org, order = c(1,0,0))
+summary(m1_org)
+
+#no need to difference because no trend 
+#but seasonslity is there
+m2_org = Arima(train.ts_org, order = c(1,0,0), seasonal = list(order = c(1,0,0), period = 52))
+summary(m2_org)
+#prediction
+m2.p_org = forecast(m2_org, h = length(valid.ts_org))
+autoplot(m2.p_org)
+
+autoplot(valid.ts_org)+ autolayer(m2.p_org$mean)
+
+accuracy(m2.p_org, valid.ts_org) # MAPE = 16.34
+
+checkresiduals(m2_org)
+
+#model 3
+m3_org = Arima(train.ts_org, order = c(1,0,0), seasonal = list(order = c(0,1,0), period = 52))
+summary(m3_org)
+
+
+#prediction
+m3.p_org = forecast(m3_org, h = length(valid.ts_org))
+autoplot(m3.p_org)
+
+autoplot(valid.ts_org)+ autolayer(m3.p_org$mean)
+
+accuracy(m3.p_org, valid.ts_org) #MAPE = 12.74
+
+checkresiduals(m3_org)
+
+#model 4
+m4_org = Arima(train.ts_org, order = c(1,0,0), seasonal = list(order = c(1,1,0), period = 52))
+summary(m4_org)
+
+
+#prediction
+m4.p_org = forecast(m4_org, h = length(valid.ts_org))
+autoplot(m4.p_org)
+
+autoplot(valid.ts_org)+ autolayer(m4.p_org$mean)
+
+accuracy(m4.p_org, valid.ts_org) # MAPE = 11.15
+
+checkresiduals(m4_org)
+```
+
+
+#5. Adding the effect of price to the model
+
+```{r}
+avocados_c_pr.ts = ts(avocados_c[,3], frequency = 52, start=c(2015))
+autoplot(avocados_c_pr.ts, main="Price", ylab="", xlab="Years")
+
+
+pairs(cbind(Volume = avocados_c.ts, Price = avocados_c_pr.ts))
+
+price.tr = window(avocados_c_pr.ts ,frequency = 52, end=c(2018,1))
+price.v = window(avocados_c_pr.ts ,frequency = 52, start=c(2018,2))
+
+Ccf(avocados_c.ts, avocados_c_pr.ts, 12)
+
+
+m1 = tslm(train.ts~trend) # weekly drop of 0.03433
+m1.p = forecast(m1,h=12)
+summary(m1)
+accuracy(m1.p,valid.ts)
+checkresiduals(m1.p)
+
+#m2 = tslm(train.ts~trend + price.tr)
+#m2.p = forecast(m2,h=12)
+#summary(m2)
+#accuracy(m2.p,valid.ts)
+#checkresiduals(m2.p)
+
+
+
+data.tr<-ts.intersect(train.ts, 
+                      AveragePrice= price.tr)
+
+m2 = tslm(train.ts~trend + AveragePrice, data=data.tr) 
+
+summary(m2)
+
+autoplot(train.ts)+
+autolayer(m2$fitted.values)
+
+#training error
+accuracy(m2$fitted.values, train.ts)
+
+
+data.valid=as.data.frame(ts.intersect(valid = valid.ts,
+                      AveragePrice = price.v))
+                      
+pred=forecast(m2, newdata= data.valid, h=dim(data.valid)[1], level=0)
+
+autoplot(valid.ts)+
+  autolayer(pred)
+
+accuracy(pred, valid.ts)
+```
+
+```{r}
+
+# For Organic 
+
+avocados_o_pr.ts = ts(avocados_o[,3], frequency = 52, start=c(2015))
+autoplot(avocados_o_pr.ts, main="Price", ylab="", xlab="Years")
+
+
+pairs(cbind(Volume = avocados_o.ts, Price = avocados_o_pr.ts))
+
+price.tr_org = window(avocados_o_pr.ts ,frequency = 52, end=c(2018,1))
+price.v_org = window(avocados_o_pr.ts ,frequency = 52, start=c(2018,2))
+
+Ccf(avocados_o.ts, avocados_o_pr.ts, 12)
+
+
+m1_org = tslm(train.ts_org~trend) 
+m1.p_org = forecast(m1_org,h=12)
+summary(m1_org)
+accuracy(m1.p_org,valid.ts_org) # MAPE of 12.75
+checkresiduals(m1.p_org)
+
+
+data.tr_org<-ts.intersect(train.ts_org, 
+                      AveragePrice= price.tr_org)
+
+m2_org = tslm(train.ts_org~trend + AveragePrice, data=data.tr_org) 
+
+summary(m2_org)
+
+autoplot(train.ts_org)+
+autolayer(m2_org$fitted.values)
+
+#training error
+accuracy(m2_org$fitted.values, train.ts_org)
+
+data.valid_org=as.data.frame(ts.intersect(valid = valid.ts_org,
+                      AveragePrice = price.v_org))
+                      
+pred_org=forecast(m2_org, newdata= data.valid_org, h=dim(data.valid_org)[1], level=0)
+
+autoplot(valid.ts_org)+
+  autolayer(pred_org)
+
+accuracy(pred_org, valid.ts_org) # MAPE of 5.82
+```
+
+
+#5. Putting the best model values of the training data in the forecasting model with price
+
+```{r}
+
+train.ts = m4$fitted
+
+fdata.tr<-ts.intersect(train.ts, 
+                      AveragePrice= price.tr)
+
+m2 = tslm(train.ts~trend + AveragePrice, data=fdata.tr) 
+
+summary(m2)
+
+autoplot(train.ts)+
+  autolayer(m2$fitted.values)
+
+#training error
+accuracy(m2$fitted.values, train.ts)
+
+data.valid=as.data.frame(ts.intersect(valid = valid.ts,
+                      AveragePrice = price.v))
+                      
+pred=forecast(m2, newdata= data.valid, h=dim(data.valid)[1], level=0)
+
+autoplot(valid.ts)+
+  autolayer(pred)
+
+accuracy(pred, valid.ts) # MAPE of 6.89
+
+checkresiduals(pred)
+```
+
+```{r}
+# For Organic
+train.ts_org= m4_org$fitted
+
+fdata.tr_org<-ts.intersect(train.ts_org, 
+                      AveragePrice= price.tr_org)
+
+m2_org = tslm(train.ts_org~trend + AveragePrice, data=fdata.tr_org) 
+
+summary(m2_org)
+
+autoplot(train.ts_org)+
+autolayer(m2_org$fitted.values)
+
+#training error
+accuracy(m2_org$fitted.values, train.ts_org)
+
+data.valid_org=as.data.frame(ts.intersect(valid = valid.ts_org,
+                      AveragePrice = price.v_org))
+                      
+pred_org=forecast(m2_org, newdata= data.valid_org, h=dim(data.valid_org)[1], level=0)
+
+autoplot(valid.ts_org)+
+  autolayer(pred_org)
+
+accuracy(pred_org, valid.ts_org)  # MAPE = 5.94
+
+```
+
+Based on the models we tried we can see that the model with ARIMA that we have plottted added with the effect of price is working the best on the validation set.
+Further we will now use the complete dataset to train the model and forecast for the rest of 2018.
+
+# For Conventional Avocados
+```{r}
+library(forecast)
+final_train.ts = window(avocados_c.ts ,frequency = 52, start=c(2015))
+
+final_arima = Arima(final_train.ts, order = c(1,0,0), seasonal = list(order = c(1,1,0), period = 52))
+summary(final_arima)
+
+
+#prediction
+final_arima.p = forecast(final_arima, h = 52)
+autoplot(final_arima.p)
+
+autoplot(final_train.ts,main="Conventional Avocados Sales Forecast",ylab="Volume (K)")+ autolayer(final_arima.p$mean)
+
+final_arima.p
+
+min(final_arima.p$mean)
+max(final_arima.p$mean)
+
+accuracy(final_train.ts,final_arima.p$fitted)
+```
+
+
+# For Organic Avocados
+```{r}
+final_train.ts = window(avocados_o.ts ,frequency = 52, start=c(2015))
+
+final_arima = Arima(final_train.ts, order = c(1,0,0), seasonal = list(order = c(1,1,0), period = 52))
+summary(final_arima)
+
+
+min(final_arima.p$mean)
+max(final_arima.p$mean)
+#prediction
+final_arima.p = forecast(final_arima, h = 52)
+autoplot(final_arima.p)
+
+autoplot(final_train.ts,main="Organic Avocados Sales Forecast",ylab="Volume (K)")+ autolayer(final_arima.p$mean)
+
+final_arima.p
+
+accuracy(final_train.ts,final_arima.p$fitted)
+
+```
+
+
