@@ -1,7 +1,3 @@
-<b>Time Series Final Project<br>
-Authors: Shubhangi Sharma, Akanksha Arun, Juhil Ahir, Tanvi Vijay<br>
-Date: 2023-12-01<br>
-
 This project focuses on analyzing and forecasting avocado sales data, specifically conventional and organic avocados in California.<br>
 
 Initial Data Exploration<br>
